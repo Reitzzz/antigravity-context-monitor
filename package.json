@@ -1,0 +1,22 @@
+{
+  "name": "antigravity-context-monitor",
+  "version": "1.0.0",
+  "description": "Google Antigravity 会话上下文容量实时监控与可视化小工具",
+  "main": "src/watch_context_widget.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node src/watch_context_widget.mjs"
+  },
+  "keywords": [
+    "antigravity",
+    "context-window",
+    "monitor",
+    "cdp",
+    "gemini"
+  ],
+  "author": "LOUIS798000",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
