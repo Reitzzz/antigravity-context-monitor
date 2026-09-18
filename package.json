@@ -1,0 +1,17 @@
+{
+  "name": "antigravity-context-monitor",
+  "version": "2.0.0",
+  "description": "Antigravity 2.x Standalone native context window monitor",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/watch_context_widget.mjs",
+    "check": "node src/watch_context_widget.mjs --check",
+    "inject": "node src/watch_context_widget.mjs --once",
+    "remove": "node src/watch_context_widget.mjs --remove",
+    "test": "node --test",
+    "test:live": "node scripts/live-check.mjs"
+  },
+  "author": "LOUIS798000",
+  "license": "MIT"
+}
