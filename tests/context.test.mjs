@@ -54,3 +54,22 @@ test('CDP URL boundary rejects remote endpoints and schemes', () => {
   assert.equal(loopbackUrl('ws://127.0.0.1:1234/devtools/page/x', ['ws:']), true);
   for (const url of ['ws://example.com', 'ws://127.0.0.1.evil.test', 'file:///tmp/x', 'https://127.0.0.1']) assert.equal(loopbackUrl(url, ['ws:']), false);
 });
+test('missing plannerConfig does not fall back to chatModel.model', () => {
+  const row = entry(0); delete row.plannerConfig;
+  assert.equal(readContext([row], 1).model, '');
+});
+test('string checkpointIndex values are parsed and can mark advancement', () => {
+  const result = readContext([entry(1, 100000, 256000, '-1'), entry(3, 1000, 256000, '2')], 4);
+  assert.equal(result.checkpoint, 2);
+  assert.equal(result.checkpointChanged, true);
+});
+test('same-step ties: agree, disagree, one incomplete, both incomplete', () => {
+  const agree = readContext([entry(1, 100, 256000), entry(1, 100, 256000)], 2);
+  assert.equal(agree.state, 'ready'); assert.equal(agree.tiedRequests, 2); assert.equal(agree.used, 100);
+  assert.equal(readContext([entry(1, 100), entry(1, 200)], 2).state, 'unavailable');
+  const incomplete = entry(1); delete incomplete.chatModel.chatStartMetadata;
+  assert.equal(readContext([incomplete, entry(1, 50)], 2).used, 50);
+  const a = entry(1); delete a.chatModel.chatStartMetadata;
+  const b = entry(1); delete b.chatModel.chatStartMetadata;
+  assert.equal(readContext([a, b], 2).state, 'unavailable');
+});

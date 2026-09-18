@@ -1,6 +1,6 @@
 {
   "name": "antigravity-context-monitor",
-  "version": "2.0.0",
+  "version": "2.0.6",
   "description": "Antigravity 2.x Standalone native context window monitor",
   "type": "module",
   "engines": { "node": ">=22" },

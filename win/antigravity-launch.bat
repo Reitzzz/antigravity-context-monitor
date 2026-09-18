@@ -6,7 +6,9 @@ if not exist "%ANTIGRAVITY_EXE%" (
   pause
   exit /b 1
 )
-node -e "if(Number(process.versions.node.split('.')[0])<22)process.exit(1)" >nul 2>&1
+for %%i in (node.exe) do set "NODE_EXE=%%~$PATH:i"
+if not defined NODE_EXE set "NODE_EXE=node"
+"%NODE_EXE%" -e "if(Number(process.versions.node.split('.')[0])<22)process.exit(1)" >nul 2>&1
 if errorlevel 1 (
   echo Node.js 22 or newer is required.
   pause

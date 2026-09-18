@@ -1,17 +1,31 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readContext } from './context_core.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
-const version = '2.0.5-native-context';
+const clientSource = fs.readFileSync(path.join(directory, 'widget_client.js'), 'utf8');
+export const version = clientSource.match(/const VERSION = '([^']+)'/)?.[1];
+if (!version) throw new Error('widget_client.js is missing VERSION');
 export function widgetScript() {
-  return `window.__agyReadContext = (${readContext.toString()});\n${fs.readFileSync(path.join(directory, 'widget_client.js'), 'utf8')}`;
+  return `window.__agyReadContext = (${readContext.toString()});\n${clientSource}`;
 }
 export function loopbackUrl(value, protocol) {
   try { const url = new URL(value); return protocol.includes(url.protocol) && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname); }
   catch { return false; }
+}
+export function resolveProfile(explicit) {
+  const profile = explicit || (process.env.APPDATA && path.join(process.env.APPDATA, 'Antigravity'));
+  if (!profile || !path.isAbsolute(profile)) throw new Error('Specify --profile with an absolute Antigravity user-data path');
+  return profile;
+}
+export function discoverPort(profile, explicitPort) {
+  const raw = String(explicitPort || fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').split(/\r?\n/)[0]).trim();
+  const port = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid CDP port');
+  return port;
 }
 export async function connect(url) {
   if (!loopbackUrl(url, ['ws:'])) throw new Error('CDP must use loopback ws://');
@@ -36,7 +50,10 @@ export async function connect(url) {
           if (data.id !== id) return;
           cleanup();
           if (data.error) reject(new Error(`CDP ${data.error.code}: ${data.error.message}`));
-          else if (data.result?.exceptionDetails) reject(new Error('Injected script threw an exception'));
+          else if (data.result?.exceptionDetails) {
+            const d = data.result.exceptionDetails;
+            reject(new Error(`Injected script threw: ${d.exception?.description || d.text || 'unknown'}`));
+          }
           else resolve(data.result);
         };
         socket.addEventListener('message', message);
@@ -57,8 +74,12 @@ export async function inspectTarget(target, mode = 'check') {
       await evaluate('window.__agyContextMonitor?.dispose(); delete window.__agyReadContext; true');
       return { status: 'removed', version: identity.version };
     }
-    if (mode === 'install') await evaluate(widgetScript());
-    const widget = await evaluate(`(() => {const s=window.__agyContextMonitor;return {installed:s?.version === '${version}',status:s?.status,snapshot:s?.snapshot,mounted:!!document.getElementById('agy-model-context-widget')};})()`);
+    const probe = () => evaluate(`(() => {const s=window.__agyContextMonitor;return {installed:s?.version === '${version}',status:s?.status,snapshot:s?.snapshot,mounted:!!document.getElementById('agy-model-context-widget'),detail:s?.detail};})()`);
+    let widget = await probe();
+    if (mode === 'install' && !widget.installed) {
+      await evaluate(widgetScript());
+      widget = await probe();
+    }
     return { status: 'supported', version: identity.version, anchor: identity.anchor, widget };
   } finally { client.socket.close(); }
 }
@@ -86,15 +107,8 @@ async function main() {
   }
   if (args.filter(a => ['--check', '--once', '--remove'].includes(a)).length > 1) throw new Error('Choose one mode');
   const option = name => args.includes(name) ? args[args.indexOf(name) + 1] : null;
-  const profile = option('--profile') || (process.env.APPDATA && path.join(process.env.APPDATA, 'Antigravity'));
-  if (!profile || !path.isAbsolute(profile)) throw new Error('Specify --profile with an absolute Antigravity user-data path');
-  const explicitPort = option('--port');
-  const getPort = () => {
-    const raw = explicitPort || fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').split(/\r?\n/)[0];
-    const port = /^\d+$/.test(raw.trim()) ? Number(raw) : NaN;
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid CDP port');
-    return port;
-  };
+  const profile = resolveProfile(option('--profile'));
+  const getPort = () => discoverPort(profile, option('--port'));
   const once = args.some(a => ['--check', '--once', '--remove'].includes(a));
   const mode = args.includes('--remove') ? 'remove' : args.includes('--check') ? 'check' : 'install';
   if (once) {
@@ -110,11 +124,12 @@ async function main() {
     if (error.code === 'EADDRINUSE') { console.log('Monitor already running (or lock port 29876 in use).'); return; }
     throw error;
   }
-  let stop = false, lastMessage = '', missing = 0, connectedOnce = false;
-  process.on('SIGINT', () => { stop = true; });
-  process.on('SIGTERM', () => { stop = true; });
+  const stopper = new AbortController();
+  let lastMessage = '', missing = 0, connectedOnce = false;
+  process.on('SIGINT', () => { stopper.abort(); });
+  process.on('SIGTERM', () => { stopper.abort(); });
   try {
-    while (!stop) {
+    while (!stopper.signal.aborted) {
       let message;
       try {
         const results = await scan(getPort(), mode);
@@ -123,11 +138,12 @@ async function main() {
         message = JSON.stringify(results.map(r => ({ status: r.status, version: r.version, mounted: r.widget?.mounted, message: r.message })));
       } catch (error) {
         missing++;
-        message = error.code === 'ENOENT' ? 'Waiting for Antigravity DevToolsActivePort…' : `Waiting for CDP: ${error.message}`;
+        message = error.code === 'ENOENT' ? 'Waiting for Antigravity DevToolsActivePort…' : `Waiting for CDP: ${error.message}${error.cause?.code ? ` (${error.cause.code})` : ''}`;
       }
       if (message !== lastMessage) { console.log(message); lastMessage = message; }
       if (connectedOnce && missing >= 12) break;
-      await new Promise(resolve => setTimeout(resolve, 2500));
+      try { await delay(2500, undefined, { signal: stopper.signal }); }
+      catch { break; }
     }
   } finally {
     try { await scan(getPort(), 'remove'); } catch { /* Client already exited. */ }

@@ -42,3 +42,16 @@
 - 原生数值为最近请求开始时的估算，非逐 token 精确实时统计。
 - 原生接口属于客户端内部接口，升级可能变化；结构不匹配时降级为未知。
 - 当前目录无 .git，改动以备份 diff 记录交付；未初始化或推送仓库。
+
+## 2.0.6 修复批次（2026-09-18）
+
+按审查结论与计划修正确性/归属/守护健壮性，挂件版本 `2.0.6-native-context`。
+
+- 配置缺 `label` 不再抛 TypeError；按模型 ID 查找只使用带字符串 label 的条目。
+- `ready` 一律要求正向归属：快照无模型、选择器无文本、别名/自动路由均显示未知，不再把选择器文本冒充「快照模型」。
+- 去掉 `chatModel.model` 回退；`checkpointIndex` 接受有符号数字字符串；同一步多条元数据一致才采用，不一致则未知（`tiedRequests` 供 live 观察）。
+- `poll()` 以 try/finally 释放 `busy` 并安排下次定时；注入异常带出 `exceptionDetails`；CDP fetch 失败附带 `cause.code`。
+- 配置刷新改为 `configsDue`（成功 60s，映射缺失 15s 后再拉）；焦点打开仅限 `:focus-visible`；先探测再注入；Ctrl+C 通过 AbortSignal 打断等待。
+- 版本从 `widget_client.js` 单源读取（改挂件源码后需重启守护）；启动器解析 `node.exe` 绝对路径。
+
+`npm test`：35/35 通过（原 16 + 本批次 19）。`npm run test:live` PASS：1340 步样本 224,885 / 256,000，`tiedRequests: 1`（本会话无同一步并列），`disagree: false`，几何与 Escape 仍成立。本窗口未观察到 `CASCADE_RUN_STATUS_RUNNING`。

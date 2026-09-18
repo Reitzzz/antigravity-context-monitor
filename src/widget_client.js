@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = '2.0.5-native-context';
+  const VERSION = '2.0.6-native-context';
   if (window.__agyContextMonitor?.version === VERSION) return;
   window.__agyContextMonitor?.dispose();
   if (window.__agyContextCircleTimer) clearInterval(window.__agyContextCircleTimer);
@@ -31,16 +31,15 @@
   const button = $('button'), panel = $('.panel');
   let disposed = false, timer, controller, mountedModel, lastRoute = '', failures = 0;
   let busy = false, urgent = false, generation = 0, idle = false;
-  let configs = [], configsAt = 0, previous = null;
+  let configs = [], configsDue = 0, previous = null;
   const route = () => location.pathname.match(/^\/c\/([a-zA-Z0-9_-]+)(?:\/|$)/)?.[1] || '';
   const modelButton = () => {
     const visible = [...document.querySelectorAll('button[data-testid="model-selector-trigger"]')].filter(el => el.getClientRects().length);
     return visible.length === 1 ? visible[0] : null;
   };
-  const label = () => (modelButton()?.textContent || '').replace(/\s+/g, ' ').trim();
+  const label = trigger => (trigger?.textContent || '').replace(/\s+/g, ' ').trim();
   const normalizeLabel = value => value.replace(/[()（）]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
-  function mount() {
-    const trigger = modelButton();
+  function mount(trigger) {
     // The trigger's immediate parent is a block. Join its outer flex row,
     // as the original widget did, instead of creating a second line inside it.
     const anchor = trigger?.closest('.no-focus-agent-input');
@@ -60,7 +59,7 @@
   button.addEventListener('click', () => show(panel.hidden));
   button.addEventListener('mouseenter', () => show(true));
   root.addEventListener('mouseleave', () => { if (!shadow.activeElement) show(false); });
-  button.addEventListener('focus', () => show(true));
+  button.addEventListener('focus', () => { if (button.matches(':focus-visible')) show(true); });
   button.addEventListener('blur', () => show(false));
   button.addEventListener('keydown', event => { if (event.key === 'Escape') { show(false); event.stopPropagation(); } });
   const outside = event => { if (!event.composedPath().includes(root)) show(false); };
@@ -70,7 +69,7 @@
   const pct = p => `${p.toFixed(1).replace(/\.0$/, '')}%`;
   const DOTS = ['#1d4ed8', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe'];
   const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  function render(result, detail, model = '') {
+  function render(result, detail, model = '', status) {
     const ready = result?.state === 'ready';
     const percent = ready ? result.percent : null;
     $('.numbers').textContent = ready ? `~${wan(result.used)}/${wan(result.limit)} (${pct(percent)})` : '—';
@@ -84,7 +83,8 @@
     $('.updated').textContent = ready ? `读取于 ${new Date().toLocaleTimeString()} · 请求关联步骤 ${result.step + 1} · 剩余约 ${format(result.remaining)} tokens` : '';
     button.setAttribute('aria-label', ready ? `上下文原生估算 ${pct(percent)}，${format(result.used)} / ${format(result.limit)} tokens` : detail);
     state.snapshot = ready ? { used: result.used, limit: result.limit, step: result.step } : null;
-    state.status = result?.state || 'unavailable';
+    state.status = result?.state || status || 'unavailable';
+    state.detail = detail;
     if (!panel.hidden) show(true);
   }
   async function rpc(method, body = {}) {
@@ -99,43 +99,54 @@
   }
   async function update() {
     if (disposed) return;
-    const id = route(), selected = label(), epoch = generation;
-    if (!mount() || !id) { render(null, '请打开一条会话'); return; }
+    const trigger = modelButton();
+    const id = route(), selected = label(trigger), epoch = generation;
+    if (!id) { render(null, '请打开一条会话'); return; }
+    if (!mount(trigger)) { render(null, '未找到唯一的模型选择器，挂件暂停挂载（多个选择器同时可见或输入区未显示）'); return; }
     controller = new AbortController();
     try {
-      if (Date.now() - configsAt > 60000) {
+      if (Date.now() >= configsDue) {
         try {
           const data = await rpc('GetUserStatus');
           configs = data.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
           if (!Array.isArray(configs)) configs = [];
-          configsAt = Date.now();
-        } catch { /* Keep last-known-good configs; stale configsAt retries each cycle. */ }
+          configsDue = Date.now() + 60000;
+        } catch { /* Keep last-known-good configs; stale configsDue retries each cycle. */ }
       }
       const summaries = await rpc('GetAllCascadeTrajectories');
       const summary = summaries.trajectorySummaries?.[id];
       if (!summary) throw new Error('当前会话尚未出现在本地接口');
-      idle = summary.status !== 'CASCADE_RUN_STATUS_RUNNING';
       const count = Number(summary.stepCount ?? 0);
       const data = count ? await rpc('GetCascadeTrajectoryGeneratorMetadata', { cascadeId: id }) : { generatorMetadata: [] };
-      if (disposed || epoch !== generation || id !== route() || selected !== label()) return;
+      if (disposed || epoch !== generation || id !== route() || selected !== label(modelButton())) return;
       const result = readContext(data.generatorMetadata ?? [], count);
-      const config = configs.find(c => c.modelOrAlias?.model === result.model);
-      const selectedConfig = configs.find(c => typeof c.label === 'string' && normalizeLabel(c.label) === normalizeLabel(selected));
-      const model = config?.label || result.model || selected;
+      const snapshotModel = typeof result.model === 'string' ? result.model : '';
+      const labelled = configs.filter(c => typeof c?.label === 'string');
+      const config = snapshotModel ? labelled.find(c => c.modelOrAlias?.model === snapshotModel) : null;
+      const selectedConfig = selected ? labelled.find(c => normalizeLabel(c.label) === normalizeLabel(selected)) : null;
+      const selectedModel = typeof selectedConfig?.modelOrAlias?.model === 'string' ? selectedConfig.modelOrAlias.model : '';
+      const aliasSelected = Boolean(selectedConfig) && !selectedModel;
+      const attributable = Boolean(snapshotModel && selected && ((selectedModel && selectedModel === snapshotModel) || (config && normalizeLabel(config.label) === normalizeLabel(selected))));
+      const switched = !aliasSelected && Boolean(snapshotModel && selected && ((selectedModel && selectedModel !== snapshotModel) || (config && normalizeLabel(config.label) !== normalizeLabel(selected))));
+      const progressed = previous?.id === id && count !== previous.count;
       const rewound = previous?.id === id && count < previous.count;
+      idle = summary.status !== 'CASCADE_RUN_STATUS_RUNNING' && !progressed;
       previous = { id, count };
-      // Ready requires positive attribution; a non-empty but stale config list proves nothing.
-      const attributable = (selectedConfig && selectedConfig.modelOrAlias?.model === result.model) || (config && normalizeLabel(config.label) === normalizeLabel(selected));
-      const switched = (selectedConfig && selectedConfig.modelOrAlias?.model !== result.model) || (config && normalizeLabel(config.label) !== normalizeLabel(selected));
-      if (selected && result.model && !attributable) {
+      if (result.state === 'ready' && !attributable) {
         if (switched) render(null, '模型已切换；等待新模型的下一次请求后读取其上下文上限', `当前选择：${selected}`);
-        else { configsAt = 0; render(null, '模型配置不可用或缺少映射，无法校验快照模型与当前选择；下一轮自动重试', `当前选择：${selected}`); }
+        else {
+          configsDue = Math.min(configsDue, Date.now() + 15000);
+          render(null, !snapshotModel ? '快照未标注模型，无法确认归属；不显示读数'
+            : !selected ? '未读取到当前模型选择，无法确认归属'
+            : aliasSelected ? '当前选择为别名/自动路由，无法校验快照模型归属'
+            : '模型配置不可用或缺少映射，无法校验快照模型与当前选择；稍后自动重试', `当前选择：${selected || '未知'}`);
+        }
       } else if (result.state === 'ready') {
-        render(result, `Antigravity 原生估算，统计时点为最近一次模型请求开始；未包含该次输出和之后的新增内容。${result.stepsAfterSnapshot ? ` 此后还有 ${result.stepsAfterSnapshot} 步。` : ''}${rewound ? ' 检测到回退，已重新读取。' : ''}${result.checkpointChanged ? ' 原生 checkpoint 已推进，可能发生上下文整理。' : ''}`, `快照模型：${model}`);
-      } else render(result, result.state === 'empty' ? '新会话：等待第一次模型请求' : '当前请求未提供原生上下文数据；不以累计用量代替', model);
+        render(result, `Antigravity 原生估算，统计时点为最近一次模型请求开始；未包含该次输出和之后的新增内容。${result.stepsAfterSnapshot ? ` 此后还有 ${result.stepsAfterSnapshot} 步。` : ''}${rewound ? ' 检测到回退，已重新读取。' : ''}${result.checkpointChanged ? ' 原生 checkpoint 已推进，可能发生上下文整理。' : ''}`, `快照模型：${config?.label || snapshotModel}`);
+      } else render(result, result.state === 'empty' ? '新会话：等待第一次模型请求' : '当前请求未提供原生上下文数据；不以累计用量代替', selected ? `当前选择：${selected}` : '');
       failures = 0;
     } catch (error) {
-      if (!disposed && epoch === generation && id === route() && selected === label()) {
+      if (!disposed && epoch === generation && id === route() && selected === label(modelButton())) {
         failures++;
         render(null, controller.signal.aborted ? '会话已变化，正在重新读取' : `读取失败：${error.message}；自动重试中`);
       }
@@ -144,27 +155,34 @@
   async function poll() {
     if (busy || disposed) return;
     busy = true;
-    await update();
-    busy = false;
-    if (!disposed) timer = setTimeout(poll, urgent ? 0 : failures ? Math.min(30000, 3000 * 2 ** Math.min(failures, 4)) : idle ? 15000 : 3000);
-    urgent = false;
+    try { await update(); }
+    catch (error) {
+      failures++;
+      try { render(null, `挂件内部错误：${error.message}；自动重试中`); }
+      catch { /* DOM 已不可用 */ }
+    } finally {
+      busy = false;
+      if (!disposed) timer = setTimeout(poll, urgent ? 0 : failures ? Math.min(30000, 3000 * 2 ** Math.min(failures, 4)) : idle ? 15000 : 3000);
+      urgent = false;
+    }
   }
   // Invalidate changed routes/models without patching host history APIs.
   const routeTimer = setInterval(() => {
-    mount();
-    const current = route(), selected = label();
+    const trigger = modelButton();
+    mount(trigger);
+    const current = route(), selected = label(trigger);
     if (current !== lastRoute || selected !== mountedModel) {
       lastRoute = current; mountedModel = selected; generation++; controller?.abort();
-      render(null, current ? '正在读取当前会话上下文…' : '请打开一条会话');
+      render(null, current ? '正在读取当前会话上下文…' : '请打开一条会话', '', current ? 'loading' : undefined);
       if (busy) urgent = true;
       else { clearTimeout(timer); timer = setTimeout(poll, 0); }
     }
   }, 250);
   const state = window.__agyContextMonitor = {
-    version: VERSION, status: 'loading', snapshot: null,
+    version: VERSION, status: 'loading', snapshot: null, detail: '',
     dispose() { disposed = true; clearTimeout(timer); clearInterval(routeTimer); controller?.abort(); document.removeEventListener('pointerdown', outside); root.remove(); delete window.__agyContextMonitor; },
   };
-  lastRoute = route(); mountedModel = label();
-  render(null, '正在读取当前会话上下文…');
+  lastRoute = route(); mountedModel = label(modelButton());
+  render(null, '正在读取当前会话上下文…', '', 'loading');
   poll();
 })();
