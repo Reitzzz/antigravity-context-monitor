@@ -2,16 +2,10 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readContext } from './context_core.mjs';
-
-const directory = path.dirname(fileURLToPath(import.meta.url));
-const clientSource = fs.readFileSync(path.join(directory, 'widget_client.js'), 'utf8');
-export const version = clientSource.match(/const VERSION = '([^']+)'/)?.[1];
-if (!version) throw new Error('widget_client.js is missing VERSION');
-export function widgetScript() {
-  return `window.__agyReadContext = (${readContext.toString()});\n${clientSource}`;
-}
+import { pathToFileURL } from 'node:url';
+import { injections, runInjections, runFailed, hasRequiredFailure } from './injections.mjs';
+export { widgetScript, version } from './context/index.mjs';
+const targetRetries = new Map();
 export function loopbackUrl(value, protocol) {
   try { const url = new URL(value); return protocol.includes(url.protocol) && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname); }
   catch { return false; }
@@ -70,17 +64,12 @@ export async function inspectTarget(target, mode = 'check') {
     const evaluate = async expression => (await client.call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })).result?.value;
     const identity = await evaluate(`(() => {const c=window.__APP_CONFIG__; return {product:c?.productName, version:c?.appVersion, hasAuth:typeof c?.csrfToken === 'string', anchor:!!document.querySelector('button[data-testid="model-selector-trigger"]')};})()`);
     if (!/antigravity/i.test(identity?.product || '') || !/^2\./.test(identity?.version || '') || !identity.hasAuth) return { status: 'unsupported', identity };
-    if (mode === 'remove') {
-      await evaluate('window.__agyContextMonitor?.dispose(); delete window.__agyReadContext; true');
-      return { status: 'removed', version: identity.version };
-    }
-    const probe = () => evaluate(`(() => {const s=window.__agyContextMonitor;return {installed:s?.version === '${version}',status:s?.status,snapshot:s?.snapshot,mounted:!!document.getElementById('agy-model-context-widget'),detail:s?.detail};})()`);
-    let widget = await probe();
-    if (mode === 'install' && !widget.installed) {
-      await evaluate(widgetScript());
-      widget = await probe();
-    }
-    return { status: 'supported', version: identity.version, anchor: identity.anchor, widget };
+    if (!targetRetries.has(target.webSocketDebuggerUrl)) targetRetries.set(target.webSocketDebuggerUrl, new Map());
+    const results = await runInjections(evaluate, mode, targetRetries.get(target.webSocketDebuggerUrl));
+    const failed = mode === 'remove'
+      ? injections.some(({ key }) => results[key]?.message)
+      : hasRequiredFailure(results) && mode === 'install';
+    return { status: failed ? 'error' : mode === 'remove' ? 'removed' : 'supported', version: identity.version, anchor: identity.anchor, ...results };
   } finally { client.socket.close(); }
 }
 export async function scan(port, mode) {
@@ -88,6 +77,8 @@ export async function scan(port, mode) {
   if (!response.ok) throw new Error(`CDP HTTP ${response.status}`);
   const targets = await response.json();
   if (!Array.isArray(targets)) throw new Error('Invalid CDP target list');
+  const active = new Set(targets.map(target => target.webSocketDebuggerUrl));
+  for (const key of targetRetries.keys()) if (!active.has(key)) targetRetries.delete(key);
   const results = [];
   for (const target of targets) {
     try { results.push(await inspectTarget(target, mode)); }
@@ -114,7 +105,7 @@ async function main() {
   if (once) {
     const results = await scan(getPort(), mode);
     console.log(JSON.stringify(results, null, 2));
-    if (!results.some(r => ['supported', 'removed'].includes(r.status))) process.exitCode = 1;
+    if (runFailed(results, mode)) process.exitCode = 1;
     return;
   }
   const lock = net.createServer();
@@ -133,9 +124,10 @@ async function main() {
       let message;
       try {
         const results = await scan(getPort(), mode);
-        connectedOnce ||= results.some(r => r.status === 'supported');
+        connectedOnce ||= results.some(r => r.version);
         missing = 0;
-        message = JSON.stringify(results.map(r => ({ status: r.status, version: r.version, mounted: r.widget?.mounted, message: r.message })));
+        message = JSON.stringify(results.map(r => ({ status: r.status, version: r.version, message: r.message,
+          ...Object.fromEntries(injections.map(({ key }) => [key, r[key] && { installed: r[key].installed, mounted: r[key].mounted, message: r[key].message }])) })));
       } catch (error) {
         missing++;
         message = error.code === 'ENOENT' ? 'Waiting for Antigravity DevToolsActivePort…' : `Waiting for CDP: ${error.message}${error.cause?.code ? ` (${error.cause.code})` : ''}`;

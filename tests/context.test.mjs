@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readContext } from '../src/context_core.mjs';
+import { readContext } from '../src/context/context_core.mjs';
 import { loopbackUrl } from '../src/watch_context_widget.mjs';
 const entry = (step, used = 145624, limit = 256000, checkpoint = -1) => ({
   stepIndices: [step], plannerConfig: { requestedModel: { model: 'MODEL_PLACEHOLDER_M318' } },

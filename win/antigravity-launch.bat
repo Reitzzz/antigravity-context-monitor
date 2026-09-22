@@ -1,16 +1,22 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 if not defined ANTIGRAVITY_EXE set "ANTIGRAVITY_EXE=%LOCALAPPDATA%\Programs\antigravity\Antigravity.exe"
 if not exist "%ANTIGRAVITY_EXE%" (
   echo Antigravity executable not found. Set ANTIGRAVITY_EXE to its absolute path.
   pause
   exit /b 1
 )
-for %%i in (node.exe) do set "NODE_EXE=%%~$PATH:i"
+if not defined NODE_EXE for %%i in (node.exe) do set "NODE_EXE=%%~$PATH:i"
 if not defined NODE_EXE set "NODE_EXE=node"
 "%NODE_EXE%" -e "if(Number(process.versions.node.split('.')[0])<22)process.exit(1)" >nul 2>&1
 if errorlevel 1 (
   echo Node.js 22 or newer is required.
+  pause
+  exit /b 1
+)
+"%NODE_EXE%" "%~dp0..\src\watch_context_widget.mjs" --help >nul
+if errorlevel 1 (
+  echo Context or localization files could not be loaded. Keep the full project folder together.
   pause
   exit /b 1
 )
