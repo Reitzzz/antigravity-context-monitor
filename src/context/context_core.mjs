@@ -42,6 +42,7 @@ export function readContext(generatorMetadata, stepCount) {
     ...last, state: 'ready', percent: last.used / last.limit * 100,
     remaining: Math.max(0, last.limit - last.used),
     checkpointChanged: Boolean(previous && last.checkpoint !== null && last.checkpoint > previous.checkpoint),
+    previousCheckpoint: previous ? previous.checkpoint : null,
     stepsAfterSnapshot: Number(stepCount) - 1 - last.step,
     tiedRequests: tied.length,
   };

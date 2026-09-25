@@ -10,7 +10,8 @@
     "inject": "node src/watch_context_widget.mjs --once",
     "remove": "node src/watch_context_widget.mjs --remove",
     "test": "node --test",
-    "test:live": "node scripts/live-check.mjs"
+    "test:live": "node scripts/live-check.mjs",
+    "measure": "node scripts/measure-metadata.mjs"
   },
   "author": "LOUIS798000",
   "license": "MIT"

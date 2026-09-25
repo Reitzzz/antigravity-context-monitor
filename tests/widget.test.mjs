@@ -6,7 +6,7 @@ import { widgetScript } from '../src/watch_context_widget.mjs';
 function harness({
   count = 1, delay = false, statusFails = false, otherModel = false,
   configs, noPlannerConfig = false, noContextMetadata = false,
-  counts, trajectoryFails = false, selector,
+  counts, trajectoryFails = false, selector, metadataSequence,
 } = {}) {
   const timers = new Map(), intervals = new Map();
   let nextId = 0, release, statusCalls = 0, trajectoryCalls = 0;
@@ -50,7 +50,9 @@ function harness({
       }
       if(url.endsWith('GetCascadeTrajectoryGeneratorMetadata')) {
         if(delay) await new Promise(resolve=>{release=resolve;});
-        result=metadata;
+        result = Array.isArray(metadataSequence)
+          ? metadataSequence[Math.min(Math.max(trajectoryCalls - 1, 0), metadataSequence.length - 1)]
+          : metadata;
       }
       return {ok:true,json:async()=>result};
     },
@@ -159,6 +161,31 @@ test('a step-count rewind is surfaced in the detail line',async()=>{
   const h=harness({counts:[3,2]});await settle();
   await h.runTimer();await settle();
   assert.match(h.nodes.get('.detail').textContent,/检测到回退/);
+  h.window.__agyContextMonitor.dispose();
+});
+const meta = (step, used) => ({ generatorMetadata: [{
+  stepIndices: [step], plannerConfig: { requestedModel: { model: 'flash' } },
+  chatModel: { chatStartMetadata: { checkpointIndex: -1, contextWindowMetadata: { estimatedTokensUsed: used, maxContextTokens: 256000 } } },
+}] });
+test('same step count with replaced metadata updates the snapshot and does not report rewind', async () => {
+  const h = harness({ count: 4, metadataSequence: [meta(1, 100), meta(1, 180)] });
+  await settle();
+  assert.equal(h.window.__agyContextMonitor.snapshot.used, 100);
+  await h.runTimer(); await settle();
+  assert.equal(h.window.__agyContextMonitor.snapshot.used, 180);
+  assert.equal(h.window.__agyContextMonitor.snapshot.limit, 256000);
+  assert.doesNotMatch(h.nodes.get('.detail').textContent, /检测到回退/);
+  h.window.__agyContextMonitor.dispose();
+});
+test('a rewind keeps the last in-range snapshot', async () => {
+  const body = { generatorMetadata: [meta(0, 50).generatorMetadata[0], meta(4, 200).generatorMetadata[0]] };
+  const h = harness({ counts: [5, 2], metadataSequence: [body, body] });
+  await settle();
+  assert.equal(h.window.__agyContextMonitor.snapshot.used, 200);
+  await h.runTimer(); await settle();
+  assert.equal(h.window.__agyContextMonitor.snapshot.used, 50);
+  assert.equal(h.window.__agyContextMonitor.snapshot.limit, 256000);
+  assert.match(h.nodes.get('.detail').textContent, /检测到回退/);
   h.window.__agyContextMonitor.dispose();
 });
 test('progressed steps poll in 3s; idle unchanged steps poll in 15s',async()=>{

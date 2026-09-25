@@ -37,6 +37,8 @@
 
 ## 限制
 
+本节记录 2026-09-13 的范围。模型数据层、GPT-OSS、响应体体积，以及「不维护 2.x 小版本矩阵」这一决定，以文末 2026-09-25 的测量为准。
+
 - 仅 2.13.0 已真机核验；其他 2.x 小版本未验收。
 - 真实回退、压缩触发、睡眠恢复、非默认安装路径仍待专门环境验证。
 - 原生数值为最近请求开始时的估算，非逐 token 精确实时统计。
@@ -55,3 +57,14 @@
 - 版本从 `widget_client.js` 单源读取（改挂件源码后需重启守护）；启动器解析 `node.exe` 绝对路径。
 
 `npm test`：35/35 通过（原 16 + 本批次 19）。`npm run test:live` PASS：1340 步样本 224,885 / 256,000，`tiedRequests: 1`（本会话无同一步并列），`disagree: false`，几何与 Escape 仍成立。本窗口未观察到 `CASCADE_RUN_STATUS_RUNNING`。
+
+## P5 收尾测量（2026-09-25）
+
+环境：本机正在运行的 Standalone 2.17.0。`npm test` 46/46 通过。`npm run measure` 只读扫描 47 条有步数会话，`errors: 0`，`conversationPages: 1`。输出不含会话标识或正文。
+
+- 数据层全部 `ready`。分母：Gemini 3.8 Flash (High) 38 条与 Gemini 3.7 Flash (High) 1 条为 256,000；Gemini 3.1 Pro (High) 1 条为 128,000；Claude Opus 4.6 (Thinking) 1 条为 160,000；GPT-OSS 120B (Medium) 1 条为 80,000。`MODEL_PLACEHOLDER_M301` 4 条、`MODEL_PLACEHOLDER_M322` 1 条没有配置标签，分母 256,000。
+- 挂件：Gemini 3.1 Pro (High) `test:live` PASS，24,641 / 128,000。随后打开的 Claude Opus 4.6 (Thinking) `test:live` PASS，24,419 / 160,000，关联步骤索引 1，`tiedRequests: 1`，`disagree: false`。分母与该模型数据层的 160,000 一致。再随后打开的 GPT-OSS 120B (Medium) `test:live` PASS，24,366 / 80,000，关联步骤索引 1，`tiedRequests: 1`，`disagree: false`。分母与该模型数据层的 80,000 一致。三次都通过单例、卸载、同行对齐、弹层边界和 Escape。当时各只有 1 个 `/c/` 页面，选择器文本分别为对应模型标签。
+- 体积：最长 537 步、263 条元数据、解码后 785,067 字节。全部会话 `maxParsePlusReadMs` 15.6。空闲 15 秒轮询下最大约 3,140,268 字节/分钟。门槛 2 MB / 100 ms 都未达到，`item7: not-triggered`，未加缓存。
+- checkpoint：`checkpointAdvancedSessions: 0`。537 步样本的最新与上一条 checkpoint 都是 1。提示语未改。
+- 回退与同长度替换：`tests/widget.test.mjs` 有两条回归。真机：GPT-OSS 专用会话点「撤销到此节点」后，步数 5 → 2，第二轮离开页面，原句回到输入框。生成器元数据只剩第 1 步，原生窗口仍是 24,366 / 80,000，checkpoint 仍是 -1；`plannerConfig` 被去掉，模型 ID `MODEL_OPENAI_GPT_OSS_120B_MEDIUM` 只在 `chatModel.model`。挂件状态 `unavailable`，文案「快照未标注模型，无法确认归属；不显示读数」，没有「检测到回退」。随后发送「test」，步数回到 5，状态 `CASCADE_RUN_STATUS_IDLE`。第 1 步仍无 `plannerConfig`；新的第 4 步有 `planModel`，24,710 / 80,000，checkpoint -1。挂件 `ready`，快照 24,710 / 80,000，关联步骤显示 5，弹层 ~2.5万/8万（30.9%），剩余约 55,290。说明里没有「检测到回退」。同长度替换未做。
+- 多窗口：只有 1 个 `/c/` 页面。刷新：撤销后的 GPT-OSS 会话重载窗口后，挂件单例恢复，与模型选择器同一行。18:36:48 `Antigravity.exe` 与 `watch_context_widget.mjs` 同时启动，用户随后确认完全退出再打开和睡眠唤醒后圆环都还在；进程启动时间未变，说明唤醒后没有另起一套进程。核对时 Standalone 2.17.0，挂件 `2.0.6-native-context`，`ready`，24,710 / 80,000，关联步骤索引 4，与原生 `planModel` `MODEL_OPENAI_GPT_OSS_120B_MEDIUM` 一致，单例，28×28，中心差 0。睡眠时长未计时。

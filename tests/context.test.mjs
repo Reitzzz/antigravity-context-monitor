@@ -37,7 +37,10 @@ test('numeric protobuf strings and percentages over 100 remain honest', () => {
 });
 test('native checkpoint advancement is distinct from token drops and rewind', () => {
   assert.equal(readContext([entry(1, 100000), entry(3, 1000)], 4).checkpointChanged, false);
-  assert.equal(readContext([entry(1, 100000, 256000, -1), entry(3, 1000, 256000, 2)], 4).checkpointChanged, true);
+  const advanced = readContext([entry(1, 100000, 256000, -1), entry(3, 1000, 256000, 2)], 4);
+  assert.equal(advanced.checkpointChanged, true);
+  assert.equal(advanced.checkpoint, 2);
+  assert.equal(advanced.previousCheckpoint, -1);
   assert.equal(readContext([entry(1), entry(3, 1000, 256000, 2)], 2).checkpointChanged, false);
 });
 test('empty, unavailable, malformed payloads', () => {

@@ -21,11 +21,12 @@ export function discoverPort(profile, explicitPort) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid CDP port');
   return port;
 }
-export async function connect(url) {
+export async function connect(url, options = {}) {
   if (!loopbackUrl(url, ['ws:'])) throw new Error('CDP must use loopback ws://');
+  const callTimeout = options.callTimeout ?? 15000;
   const socket = new WebSocket(url);
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { socket.close(); reject(new Error('CDP connection timeout')); }, 4000);
+    const timer = setTimeout(() => { socket.close(); reject(new Error('CDP connection timeout')); }, options.openTimeout ?? 4000);
     socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
     socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('CDP connection failed')); }, { once: true });
   });
@@ -37,7 +38,7 @@ export async function connect(url) {
         const id = ++nextId;
         const cleanup = () => { clearTimeout(timer); socket.removeEventListener('message', message); socket.removeEventListener('close', closed); };
         const closed = () => { cleanup(); reject(new Error('CDP connection closed')); };
-        const timer = setTimeout(() => { cleanup(); reject(new Error(`${method} timeout`)); }, 15000);
+        const timer = setTimeout(() => { cleanup(); reject(new Error(`${method} timeout`)); }, callTimeout);
         const message = event => {
           let data;
           try { data = JSON.parse(event.data); } catch { return; }
