@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = '2.0.6-native-context';
+  const VERSION = '2.0.8-native-context';
   if (window.__agyContextMonitor?.version === VERSION) return;
   window.__agyContextMonitor?.dispose();
   if (window.__agyContextCircleTimer) clearInterval(window.__agyContextCircleTimer);
@@ -15,7 +15,7 @@
     button:hover{background:var(--secondary,#8882)}button:focus-visible{outline:2px solid var(--primary,#007acc);outline-offset:2px}
     svg{width:16px;height:16px;transform:rotate(-90deg)}circle{fill:none;stroke-width:3}
     .track{stroke:currentColor;opacity:.15}.fill{stroke:var(--primary,#007acc);stroke-dasharray:81.6814;stroke-dashoffset:81.6814}
-    .panel{position:fixed;box-sizing:border-box;width:300px;max-width:calc(100vw - 16px);max-height:70vh;overflow:auto;padding:14px 16px;background:var(--card,#fff);color:var(--foreground,#222);border:1px solid var(--border,#8885);border-radius:12px;box-shadow:0 6px 24px #0003;z-index:2147483647;white-space:normal}
+    .panel{position:fixed;inset:auto;margin:0;box-sizing:border-box;width:300px;max-width:calc(100vw - 16px);max-height:70vh;overflow:auto;padding:14px 16px;background:var(--card,#fff);color:var(--foreground,#222);border:1px solid var(--border,#8885);border-radius:12px;box-shadow:0 6px 24px #0003;z-index:2147483647;white-space:normal}
     .panel[hidden]{display:none}
     header{display:flex;align-items:baseline;justify-content:space-between;gap:12px}header strong{font-size:14px}
     .numbers{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;opacity:.9}
@@ -26,7 +26,7 @@
     p{margin:8px 0 0;font-size:11px}.muted{opacity:.75}
   </style><button type="button" aria-label="上下文监控" aria-expanded="false">
     <svg viewBox="0 0 32 32" aria-hidden="true"><circle class="track" cx="16" cy="16" r="13"/><circle class="fill" cx="16" cy="16" r="13"/></svg>
-  </button><section class="panel" hidden aria-label="上下文详情"><header><strong>上下文容量</strong><span class="numbers">—</span></header><div class="bar"><i></i></div><ul class="breakdown"></ul><p class="model"></p><p class="detail"></p><p class="updated muted"></p></section>`;
+  </button><section class="panel" popover="manual" hidden aria-label="上下文详情"><header><strong>上下文容量</strong><span class="numbers">—</span></header><div class="bar"><i></i></div><ul class="breakdown"></ul><p class="model"></p><p class="detail"></p><p class="updated muted"></p></section>`;
   const $ = selector => shadow.querySelector(selector);
   const button = $('button'), panel = $('.panel');
   let disposed = false, timer, controller, mountedModel, lastRoute = '', failures = 0;
@@ -47,8 +47,24 @@
     if (!anchor) root.remove();
     return Boolean(anchor);
   }
+  // This widget mounts inside the composer's containment/stacking context, so even with
+  // z-index 2147483647 the app's workspace side panel still paints above the panel (its 1px
+  // resize divider shows through). Promote the open panel to the top layer with the Popover
+  // API — nothing in the page's stacking order can cover that — and keep the plain hidden
+  // toggle wherever the API is missing (older engines, the Node test harness).
+  const useTopLayer = typeof panel.showPopover === 'function' && typeof panel.matches === 'function';
   function show(open) {
-    panel.hidden = !open;
+    if (useTopLayer) {
+      try {
+        if (open) {
+          panel.hidden = false;
+          if (!panel.matches(':popover-open')) panel.showPopover();
+        } else {
+          if (panel.matches(':popover-open')) panel.hidePopover();
+          panel.hidden = true;
+        }
+      } catch { panel.hidden = !open; }
+    } else panel.hidden = !open;
     button.setAttribute('aria-expanded', String(open));
     if (open) {
       const rect = button.getBoundingClientRect();

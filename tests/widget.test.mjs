@@ -6,14 +6,23 @@ import { widgetScript } from '../src/watch_context_widget.mjs';
 function harness({
   count = 1, delay = false, statusFails = false, otherModel = false,
   configs, noPlannerConfig = false, noContextMetadata = false,
-  counts, trajectoryFails = false, selector, metadataSequence,
+  counts, trajectoryFails = false, selector, metadataSequence, legacyPopover = false,
 } = {}) {
   const timers = new Map(), intervals = new Map();
   let nextId = 0, release, statusCalls = 0, trajectoryCalls = 0;
   const flags = { failQuery: false };
   const nodes = new Map();
-  const element = () => ({ style: {}, hidden: true, textContent: '', isConnected: false,
-    addEventListener() {}, setAttribute() {}, remove() { this.isConnected = false; },
+  const element = () => ({
+    style: {}, hidden: true, textContent: '', isConnected: false, offsetHeight: 200,
+    popoverOpen: false, events: {}, showPopoverCalls: 0, hidePopoverCalls: 0,
+    addEventListener(type, fn) { (this.events[type] ??= []).push(fn); },
+    dispatch(type) { for (const fn of this.events[type] || []) fn({ composedPath: () => [this], key: '' }); },
+    ...(legacyPopover ? {} : {
+      showPopover() { this.popoverOpen = true; this.showPopoverCalls++; },
+      hidePopover() { this.popoverOpen = false; this.hidePopoverCalls++; },
+      matches(selector) { return selector === ':popover-open' && this.popoverOpen; },
+    }),
+    setAttribute() {}, remove() { this.isConnected = false; },
     getBoundingClientRect: () => ({left:10,top:500,height:28}),
     attachShadow() { return this.shadowRoot = {querySelector: sel => { if (!nodes.has(sel)) nodes.set(sel,element()); return nodes.get(sel); }}; },
   });
@@ -27,7 +36,7 @@ function harness({
   const defaultConfigs = otherModel
     ? [{label:'Other Model',modelOrAlias:{model:'other'}}]
     : [{label:'Gemini 3.8 Flash (High)',modelOrAlias:{model:'flash'}}];
-  const context = vm.createContext({window,location,document:{
+  const context = vm.createContext({window,location,innerWidth:1400,document:{
     createElement:element,querySelectorAll:sel=>{
       if (flags.failQuery) throw new Error('query failed');
       return sel.startsWith('button')?[model]:[];
@@ -222,5 +231,25 @@ test('a throw outside update still releases busy and reschedules',async()=>{
 test('debug state detail matches the panel detail text',async()=>{
   const h=harness();await settle();
   assert.equal(h.window.__agyContextMonitor.detail,h.nodes.get('.detail').textContent);
+  h.window.__agyContextMonitor.dispose();
+});
+test('an open panel is promoted to the top layer so app chrome cannot cover it',async()=>{
+  const h=harness();await settle();
+  const panel=h.nodes.get('.panel'),button=h.nodes.get('button');
+  button.dispatch('mouseenter');
+  assert.equal(panel.popoverOpen,true);
+  assert.equal(panel.hidden,false);
+  button.dispatch('click');
+  assert.equal(panel.popoverOpen,false);
+  assert.equal(panel.hidden,true);
+  h.window.__agyContextMonitor.dispose();
+});
+test('without the Popover API the panel still toggles through the hidden attribute',async()=>{
+  const h=harness({legacyPopover:true});await settle();
+  const panel=h.nodes.get('.panel'),button=h.nodes.get('button');
+  button.dispatch('mouseenter');
+  assert.equal(panel.hidden,false);
+  button.dispatch('click');
+  assert.equal(panel.hidden,true);
   h.window.__agyContextMonitor.dispose();
 });

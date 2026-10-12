@@ -68,3 +68,13 @@
 - checkpoint：`checkpointAdvancedSessions: 0`。537 步样本的最新与上一条 checkpoint 都是 1。提示语未改。
 - 回退与同长度替换：`tests/widget.test.mjs` 有两条回归。真机：GPT-OSS 专用会话点「撤销到此节点」后，步数 5 → 2，第二轮离开页面，原句回到输入框。生成器元数据只剩第 1 步，原生窗口仍是 24,366 / 80,000，checkpoint 仍是 -1；`plannerConfig` 被去掉，模型 ID `MODEL_OPENAI_GPT_OSS_120B_MEDIUM` 只在 `chatModel.model`。挂件状态 `unavailable`，文案「快照未标注模型，无法确认归属；不显示读数」，没有「检测到回退」。随后发送「test」，步数回到 5，状态 `CASCADE_RUN_STATUS_IDLE`。第 1 步仍无 `plannerConfig`；新的第 4 步有 `planModel`，24,710 / 80,000，checkpoint -1。挂件 `ready`，快照 24,710 / 80,000，关联步骤显示 5，弹层 ~2.5万/8万（30.9%），剩余约 55,290。说明里没有「检测到回退」。同长度替换未做。
 - 多窗口：只有 1 个 `/c/` 页面。刷新：撤销后的 GPT-OSS 会话重载窗口后，挂件单例恢复，与模型选择器同一行。18:36:48 `Antigravity.exe` 与 `watch_context_widget.mjs` 同时启动，用户随后确认完全退出再打开和睡眠唤醒后圆环都还在；进程启动时间未变，说明唤醒后没有另起一套进程。核对时 Standalone 2.17.0，挂件 `2.0.6-native-context`，`ready`，24,710 / 80,000，关联步骤索引 4，与原生 `planModel` `MODEL_OPENAI_GPT_OSS_120B_MEDIUM` 一致，单例，28×28，中心差 0。睡眠时长未计时。
+
+## 2.0.8 修复批次（2026-10-12）
+
+修复「打开工作区侧栏后挂件弹层看起来透明/被穿透」的用户缺陷，挂件版本 `2.0.8-native-context`。
+
+- **现象**：Antigravity 打开右侧辅助面板后，弹层上出现一条来自应用侧栏的 1px 竖线（用户截图中 device x≈1017，正是侧栏左边框/拖拽分隔条），弹层文字与进度条仍正常，肉眼观感为「面板透明」。
+- **根因（像素与命中测试确证）**：挂件挂在输入区内部，最近的祖先 `position:relative; z-index:10` 建立独立层叠上下文，弹层的 `z-index:2147483647` 被限制在该上下文内，无法压过应用侧栏的 `z-10` 绝对定位元素；侧栏分隔条（`w-[1px] bg-border`）绘制在弹层之上。对照实验：修复前 `elementFromPoint` 在该列返回应用分隔条、像素 232（0.075 黑叠在面板 251 上）；把整片面版临时改为纯红后无任何应用像素残留，证明面板底色本身不透明、不存在 `color-mix()` 掉绘制。
+- **修复**：弹层加 `popover="manual"`，打开时经 `showPopover()` 提升到 top layer（不受页面层叠顺序影响），关闭 `hidePopover()` 并恢复 `hidden`；检测不到 Popover API 时回退为纯 `hidden` 切换（Node 测试桩走该路径）。CSS 加 `inset:auto;margin:0` 抵消 popover 默认定位。
+- **回归验证**：`npm test` 48/48 通过（新增「打开即进入 top layer」与「无 Popover API 时 hidden 回退」两例）。真机（Standalone 2.22.0）：修复后同一 x=814 列 `elementFromPoint` 返回挂件、像素 251；全列扫描无穿越竖线；悬停打开/移开关闭/点击切换/键盘 focus-visible 打开/Escape/外部点击六条交互路径逐一实测正常；`npm run test:live` PASS（native values、same-row alignment、popover bounds、Escape）。
+- **限制**：popover 定位依赖 `show()` 计算的 left/top；窗口拖动或侧栏尺寸变化时按既有轮询节奏重新定位，与改版前一致。
