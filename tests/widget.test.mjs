@@ -12,9 +12,11 @@ function harness({
   let nextId = 0, release, statusCalls = 0, trajectoryCalls = 0;
   const flags = { failQuery: false };
   const nodes = new Map();
+  const created = [];
+  const documentListeners = new Map();
   const element = () => ({
     style: {}, hidden: true, textContent: '', isConnected: false, offsetHeight: 200,
-    popoverOpen: false, events: {}, showPopoverCalls: 0, hidePopoverCalls: 0,
+    popoverOpen: false, events: {}, showPopoverCalls: 0, hidePopoverCalls: 0, attrs: {},
     addEventListener(type, fn) { (this.events[type] ??= []).push(fn); },
     dispatch(type) { for (const fn of this.events[type] || []) fn({ composedPath: () => [this], key: '' }); },
     ...(legacyPopover ? {} : {
@@ -22,8 +24,10 @@ function harness({
       hidePopover() { this.popoverOpen = false; this.hidePopoverCalls++; },
       matches(selector) { return selector === ':popover-open' && this.popoverOpen; },
     }),
-    setAttribute() {}, remove() { this.isConnected = false; },
-    getBoundingClientRect: () => ({left:10,top:500,height:28}),
+    setAttribute(name, value) { this.attrs[name] = String(value); },
+    removeAttribute(name) { delete this.attrs[name]; },
+    remove() { this.isConnected = false; },
+    getBoundingClientRect: () => ({left:10,top:500,bottom:528,width:28,height:28}),
     attachShadow() { return this.shadowRoot = {querySelector: sel => { if (!nodes.has(sel)) nodes.set(sel,element()); return nodes.get(sel); }}; },
   });
   const anchor = { after(root) { root.isConnected = true; root.previousElementSibling = this; } };
@@ -36,11 +40,14 @@ function harness({
   const defaultConfigs = otherModel
     ? [{label:'Other Model',modelOrAlias:{model:'other'}}]
     : [{label:'Gemini 3.8 Flash (High)',modelOrAlias:{model:'flash'}}];
-  const context = vm.createContext({window,location,innerWidth:1400,document:{
-    createElement:element,querySelectorAll:sel=>{
+  const context = vm.createContext({window,location,innerWidth:1400,innerHeight:810,document:{
+    createElement:()=>{ const el = element(); created.push(el); return el; },
+    querySelectorAll:sel=>{
       if (flags.failQuery) throw new Error('query failed');
       return sel.startsWith('button')?[model]:[];
-    },addEventListener(){},removeEventListener(){},
+    },
+    addEventListener(type,fn){ if(!documentListeners.has(type)) documentListeners.set(type,[]); documentListeners.get(type).push(fn); },
+    removeEventListener(type,fn){ const list = documentListeners.get(type); if (list) list.splice(list.indexOf(fn),1); },
   }, AbortSignal,AbortController, console,
     setInterval:fn=>{const id=++nextId;intervals.set(id,fn);return id;},clearInterval:id=>intervals.delete(id),
     setTimeout:(fn,ms)=>{const id=++nextId;timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id),
@@ -74,7 +81,7 @@ function harness({
     timers.delete(bestId);
     await best.fn();
   };
-  return {window,location,model,nodes,timers,intervals,flags,get statusCalls(){return statusCalls;},
+  return {window,location,model,nodes,created,timers,intervals,flags,documentListeners,get statusCalls(){return statusCalls;},
     release:()=>release?.(),tick:()=>[...intervals.values()].forEach(fn=>fn()),runTimer};
 }
 const settle = () => new Promise(resolve=>setImmediate(resolve));
@@ -239,9 +246,6 @@ test('an open panel is promoted to the top layer so app chrome cannot cover it',
   button.dispatch('mouseenter');
   assert.equal(panel.popoverOpen,true);
   assert.equal(panel.hidden,false);
-  button.dispatch('click');
-  assert.equal(panel.popoverOpen,false);
-  assert.equal(panel.hidden,true);
   h.window.__agyContextMonitor.dispose();
 });
 test('without the Popover API the panel still toggles through the hidden attribute',async()=>{
@@ -249,7 +253,84 @@ test('without the Popover API the panel still toggles through the hidden attribu
   const panel=h.nodes.get('.panel'),button=h.nodes.get('button');
   button.dispatch('mouseenter');
   assert.equal(panel.hidden,false);
-  button.dispatch('click');
+  const outside=h.documentListeners.get('pointerdown')[0];
+  outside({composedPath:()=>[]});
   assert.equal(panel.hidden,true);
+  h.window.__agyContextMonitor.dispose();
+});
+test('a click pins the panel so blur and hover leave no longer close it',async()=>{
+  const h=harness();await settle();
+  const panel=h.nodes.get('.panel'),button=h.nodes.get('button'),root=h.created[0];
+  button.dispatch('mouseenter');
+  button.dispatch('click');
+  assert.equal(panel.popoverOpen,true);
+  assert.equal(root.attrs['data-pinned'],'');
+  button.dispatch('blur');
+  root.dispatch('mouseleave');
+  assert.equal(panel.popoverOpen,true,'pinned panel must survive blur and hover leave');
+  assert.equal(panel.hidden,false);
+  await h.runTimer();await settle();
+  assert.equal(panel.popoverOpen,true,'pinned panel must survive a polling re-render');
+  h.window.__agyContextMonitor.dispose();
+});
+test('clicking outside unpins and closes; clicking the pinned ring does the same',async()=>{
+  const outside=h=>h.documentListeners.get('pointerdown')[0]({composedPath:()=>[]});
+  const first=harness();await settle();
+  const panel=first.nodes.get('.panel'),button=first.nodes.get('button'),root=first.created[0];
+  button.dispatch('click');
+  assert.equal(root.attrs['data-pinned'],'');
+  outside(first);
+  assert.equal(panel.popoverOpen,false);
+  assert.equal(panel.hidden,true);
+  assert.equal(root.attrs['data-pinned'],undefined);
+  first.window.__agyContextMonitor.dispose();
+  const second=harness();await settle();
+  const p2=second.nodes.get('.panel'),b2=second.nodes.get('button'),r2=second.created[0];
+  b2.dispatch('click');
+  assert.equal(p2.popoverOpen,true);
+  b2.dispatch('click');
+  assert.equal(p2.popoverOpen,false,'second click on a pinned ring closes it');
+  assert.equal(r2.attrs['data-pinned'],undefined);
+  second.window.__agyContextMonitor.dispose();
+});
+test('clicking inside the widget keeps it pinned',async()=>{
+  const h=harness();await settle();
+  const panel=h.nodes.get('.panel'),button=h.nodes.get('button');
+  button.dispatch('click');
+  const inside=h.documentListeners.get('pointerdown')[0];
+  inside({composedPath:()=>[h.created[0]]});
+  assert.equal(panel.popoverOpen,true);
+  h.window.__agyContextMonitor.dispose();
+});
+test('the panel opens above the ring, flipping below when it would cover the ring',async()=>{
+  const h=harness();await settle();
+  const panel=h.nodes.get('.panel'),button=h.nodes.get('button');
+  button.dispatch('mouseenter');
+  assert.equal(panel.style.top,'292px','500 - 200 - 8');
+  assert.equal(panel.style.left,'10px');
+  // Ring high up: opening above would clamp back over the ring, so flip below.
+  button.getBoundingClientRect=()=>({left:10,top:6,bottom:34,width:28,height:28});
+  button.dispatch('mouseenter');
+  assert.equal(panel.style.top,'42px','34 + 8');
+  h.window.__agyContextMonitor.dispose();
+});
+test('Escape closes a pinned panel even after the app took the button focus',async()=>{
+  const h=harness();await settle();
+  const panel=h.nodes.get('.panel'),button=h.nodes.get('button');
+  button.dispatch('click');
+  assert.equal(panel.popoverOpen,true);
+  const escape=[...h.documentListeners.get('keydown')].at(-1);
+  escape({key:'Escape'});
+  assert.equal(panel.popoverOpen,false);
+  assert.equal(panel.hidden,true);
+  h.window.__agyContextMonitor.dispose();
+});
+test('a document Escape does nothing while no panel is pinned',async()=>{
+  const h=harness();await settle();
+  const panel=h.nodes.get('.panel'),button=h.nodes.get('button');
+  button.dispatch('mouseenter');
+  assert.equal(panel.hidden,false);
+  for(const fn of h.documentListeners.get('keydown') || []) fn({key:'Escape'});
+  assert.equal(panel.hidden,false,'hover-opened panel is not a pinned panel');
   h.window.__agyContextMonitor.dispose();
 });

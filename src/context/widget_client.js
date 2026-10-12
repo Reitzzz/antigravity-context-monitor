@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = '2.0.8-native-context';
+  const VERSION = '2.0.9-native-context';
   if (window.__agyContextMonitor?.version === VERSION) return;
   window.__agyContextMonitor?.dispose();
   if (window.__agyContextCircleTimer) clearInterval(window.__agyContextCircleTimer);
@@ -12,7 +12,7 @@
   shadow.innerHTML = `<style>
     :host{display:inline-flex;vertical-align:middle;margin-left:2px;flex-shrink:0;width:28px;height:28px;font:12px/1.5 system-ui;color:var(--foreground,#222)}
     button{display:flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer}
-    button:hover{background:var(--secondary,#8882)}button:focus-visible{outline:2px solid var(--primary,#007acc);outline-offset:2px}
+    button:hover{background:var(--secondary,#8882)}:host([data-pinned]) button{background:var(--secondary,#8882)}button:focus-visible{outline:2px solid var(--primary,#007acc);outline-offset:2px}
     svg{width:16px;height:16px;transform:rotate(-90deg)}circle{fill:none;stroke-width:3}
     .track{stroke:currentColor;opacity:.15}.fill{stroke:var(--primary,#007acc);stroke-dasharray:81.6814;stroke-dashoffset:81.6814}
     .panel{position:fixed;inset:auto;margin:0;box-sizing:border-box;width:300px;max-width:calc(100vw - 16px);max-height:70vh;overflow:auto;padding:14px 16px;background:var(--card,#fff);color:var(--foreground,#222);border:1px solid var(--border,#8885);border-radius:12px;box-shadow:0 6px 24px #0003;z-index:2147483647;white-space:normal}
@@ -32,6 +32,7 @@
   let disposed = false, timer, controller, mountedModel, lastRoute = '', failures = 0;
   let busy = false, urgent = false, generation = 0, idle = false;
   let configs = [], configsDue = 0, previous = null;
+  let pinned = false;
   const route = () => location.pathname.match(/^\/c\/([a-zA-Z0-9_-]+)(?:\/|$)/)?.[1] || '';
   const modelButton = () => {
     const visible = [...document.querySelectorAll('button[data-testid="model-selector-trigger"]')].filter(el => el.getClientRects().length);
@@ -53,31 +54,52 @@
   // API — nothing in the page's stacking order can cover that — and keep the plain hidden
   // toggle wherever the API is missing (older engines, the Node test harness).
   const useTopLayer = typeof panel.showPopover === 'function' && typeof panel.matches === 'function';
-  function show(open) {
+  function applyOpen(value) {
     if (useTopLayer) {
       try {
-        if (open) {
+        if (value) {
           panel.hidden = false;
           if (!panel.matches(':popover-open')) panel.showPopover();
         } else {
           if (panel.matches(':popover-open')) panel.hidePopover();
           panel.hidden = true;
         }
-      } catch { panel.hidden = !open; }
-    } else panel.hidden = !open;
-    button.setAttribute('aria-expanded', String(open));
-    if (open) {
-      const rect = button.getBoundingClientRect();
-      panel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 308))}px`;
-      panel.style.top = `${Math.max(8, rect.top - panel.offsetHeight - 8)}px`;
+        return;
+      } catch { /* Fall through to the plain hidden toggle. */ }
     }
+    panel.hidden = !value;
   }
-  button.addEventListener('click', () => show(panel.hidden));
-  button.addEventListener('mouseenter', () => show(true));
-  root.addEventListener('mouseleave', () => { if (!shadow.activeElement) show(false); });
-  button.addEventListener('focus', () => { if (button.matches(':focus-visible')) show(true); });
-  button.addEventListener('blur', () => show(false));
+  function place() {
+    const rect = button.getBoundingClientRect();
+    const height = panel.offsetHeight;
+    panel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 308))}px`;
+    const above = rect.top - height - 8;
+    // Prefer opening above the ring; flip below when it would be clamped back over the
+    // ring, which would swallow the click that pins the panel.
+    panel.style.top = above >= 8
+      ? `${above}px`
+      : `${Math.min(rect.bottom + 8, Math.max(8, innerHeight - height - 8))}px`;
+  }
+  function show(open, pin = pinned) {
+    pinned = open ? pin : false;
+    applyOpen(open);
+    button.setAttribute('aria-expanded', String(open));
+    if (pinned) root.setAttribute('data-pinned', ''); else root.removeAttribute('data-pinned');
+    if (open) place();
+  }
+  // A click pins the panel: it survives hover leave, blur and re-render until the user
+  // clicks the ring again or clicks anywhere outside the widget. Hovering already opened
+  // the panel, so the first click pins rather than toggling it shut.
+  button.addEventListener('click', () => { if (pinned) show(false); else show(true, true); });
+  button.addEventListener('mouseenter', () => { if (!pinned) show(true, false); });
+  root.addEventListener('mouseleave', () => { if (!pinned && !shadow.activeElement) show(false); });
+  button.addEventListener('focus', () => { if (!pinned && button.matches(':focus-visible')) show(true, false); });
+  button.addEventListener('blur', () => { if (!pinned) show(false); });
   button.addEventListener('keydown', event => { if (event.key === 'Escape') { show(false); event.stopPropagation(); } });
+  // A pinned panel usually loses the button's focus to the app, so Escape is caught at the
+  // document as well, but only while pinned — typing in the app must stay untouched.
+  const escape = event => { if (pinned && event.key === 'Escape') show(false); };
+  document.addEventListener('keydown', escape);
   const outside = event => { if (!event.composedPath().includes(root)) show(false); };
   document.addEventListener('pointerdown', outside);
   const format = n => n.toLocaleString('en-US');
@@ -196,7 +218,7 @@
   }, 250);
   const state = window.__agyContextMonitor = {
     version: VERSION, status: 'loading', snapshot: null, detail: '',
-    dispose() { disposed = true; clearTimeout(timer); clearInterval(routeTimer); controller?.abort(); document.removeEventListener('pointerdown', outside); root.remove(); delete window.__agyContextMonitor; },
+    dispose() { disposed = true; clearTimeout(timer); clearInterval(routeTimer); controller?.abort(); document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); root.remove(); delete window.__agyContextMonitor; },
   };
   lastRoute = route(); mountedModel = label(modelButton());
   render(null, '正在读取当前会话上下文…', '', 'loading');
